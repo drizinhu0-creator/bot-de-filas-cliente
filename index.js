@@ -463,6 +463,54 @@ function montarSelectEmbeds() {
 }
 
 // ==========================================
+// CONSTRUTOR DE EMBED PERSONALIZADA (/embed)
+// Rascunho fica em memória por usuário enquanto ele monta a embed (título, descrição, cor,
+// imagem, thumbnail) e some quando ele publica ou fecha o painel. A descrição aceita, do jeito
+// que o usuário digitar: emojis do servidor (<:nome:id>), "# " para títulos maiores dentro da
+// embed e menções de pessoas/canais (@usuário, #canal) — tudo isso é só texto puro, então o
+// próprio Discord já renderiza certo, sem precisar de nenhum tratamento especial aqui.
+// ==========================================
+
+const rascunhosEmbed = new Map();
+
+function obterRascunhoEmbed(userId) {
+  if (!rascunhosEmbed.has(userId)) {
+    rascunhosEmbed.set(userId, { titulo: null, descricao: null, cor: null, imagem: null, thumbnail: null });
+  }
+  return rascunhosEmbed.get(userId);
+}
+
+function montarPainelEmbedCustom(userId) {
+  const rascunho = obterRascunhoEmbed(userId);
+
+  const preview = new EmbedBuilder().setColor(rascunho.cor || '#FF0000');
+  if (rascunho.titulo) preview.setTitle(rascunho.titulo);
+  preview.setDescription(rascunho.descricao || '*Nenhuma descrição definida ainda. Use os botões abaixo para configurar a embed.*');
+  if (rascunho.imagem) preview.setImage(rascunho.imagem);
+  if (rascunho.thumbnail) preview.setThumbnail(rascunho.thumbnail);
+
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('embedcustom_titulo').setLabel('Título').setStyle(ButtonStyle.Primary).setEmoji('📝'),
+    new ButtonBuilder().setCustomId('embedcustom_descricao').setLabel('Descrição').setStyle(ButtonStyle.Primary).setEmoji('📄'),
+    new ButtonBuilder().setCustomId('embedcustom_cor').setLabel('Cor').setStyle(ButtonStyle.Primary).setEmoji('🎨')
+  );
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('embedcustom_imagem').setLabel('Imagem').setStyle(ButtonStyle.Secondary).setEmoji('🌄'),
+    new ButtonBuilder().setCustomId('embedcustom_thumbnail').setLabel('Thumbnail').setStyle(ButtonStyle.Secondary).setEmoji('🖼️'),
+    new ButtonBuilder().setCustomId('embedcustom_limpar').setLabel('Limpar Tudo').setStyle(ButtonStyle.Danger).setEmoji('🗑️')
+  );
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('embedcustom_publicar').setLabel('Publicar Aqui').setStyle(ButtonStyle.Success).setEmoji('✅')
+  );
+
+  return {
+    content: '🖼️ **Construtor de Embed** — configure abaixo, a prévia atualiza em tempo real:',
+    embeds: [preview],
+    components: [row1, row2, row3]
+  };
+}
+
+// ==========================================
 // GERENCIAMENTO DA FILA FIFO DE MEDIADORES
 // ==========================================
 
@@ -698,11 +746,13 @@ async function postarRankingDiario() {
 
   const descricao = top10.length > 0
     ? top10.map((item, i) => `${i + 1}º - <@${item.id}> | **${item.valor}** vitória${item.valor === 1 ? '' : 's'}`).join('\n')
-    : 'Nenhuma vitória registrada nas últimas 24 horas.';
+    : 'Nenhuma vitória registrada nas últimas 24h.';
 
+  // Esta função sempre envia a mensagem, mesmo quando ninguém venceu no dia (fica só com o
+  // texto de fallback acima), pois o ranking diário deve ser postado incondicionalmente.
   const embed = new EmbedBuilder()
     .setTitle('🏆 Destaque Diário')
-    .setDescription(`Jogadores com mais vitórias nas últimas 24 horas:\n\n${descricao}`)
+    .setDescription(`Jogadores com mais vitórias nas últimas 24h:\n\n${descricao}`)
     .setColor(await corPadrao());
 
   const icone = canal.guild ? canal.guild.iconURL({ size: 512 }) : null;
@@ -1411,7 +1461,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         );
 
         const row2 = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('configbot_mediador').setLabel('🎖️ Cargo Mediador').setStyle(ButtonStyle.Primary)
+          new ButtonBuilder().setCustomId('configbot_mediador').setLabel('🎖️ Cargo Mediador').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId('configbot_canal_p').setLabel('📇 Canal .p').setStyle(ButtonStyle.Primary)
         );
 
         return interaction.editReply({
@@ -1515,7 +1566,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       if (commandName === 'embed') {
         if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
-        return interaction.editReply({ content: '🖼️ Selecione a embed que deseja editar:', components: [montarSelectEmbeds()] });
+        rascunhosEmbed.delete(interaction.user.id);
+        return interaction.editReply(montarPainelEmbedCustom(interaction.user.id));
       }
     }
 
@@ -1789,6 +1841,44 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await db.set('config_cor_hex', hex);
         return interaction.editReply({ content: `✅ Cor da organização atualizada para: \`${hex}\`` });
       }
+
+      if (interaction.customId === 'modal_embedcustom_titulo') {
+        const rascunho = obterRascunhoEmbed(interaction.user.id);
+        const valor = interaction.fields.getTextInputValue('embedcustom_titulo_input').trim();
+        rascunho.titulo = valor || null;
+        return interaction.update(montarPainelEmbedCustom(interaction.user.id));
+      }
+
+      if (interaction.customId === 'modal_embedcustom_descricao') {
+        const rascunho = obterRascunhoEmbed(interaction.user.id);
+        const valor = interaction.fields.getTextInputValue('embedcustom_descricao_input');
+        rascunho.descricao = (valor && valor.trim()) ? valor : null;
+        return interaction.update(montarPainelEmbedCustom(interaction.user.id));
+      }
+
+      if (interaction.customId === 'modal_embedcustom_cor') {
+        const rascunho = obterRascunhoEmbed(interaction.user.id);
+        const hex = interaction.fields.getTextInputValue('embedcustom_cor_input').trim();
+        if (hex && !/^#([0-9A-F]{3}){1,2}$/i.test(hex)) {
+          return interaction.reply({ content: '❌ Formato HEX inválido. Exemplo correto: #FF0000', ephemeral: true });
+        }
+        rascunho.cor = hex || null;
+        return interaction.update(montarPainelEmbedCustom(interaction.user.id));
+      }
+
+      if (interaction.customId === 'modal_embedcustom_imagem') {
+        const rascunho = obterRascunhoEmbed(interaction.user.id);
+        const valor = interaction.fields.getTextInputValue('embedcustom_imagem_input').trim();
+        rascunho.imagem = valor || null;
+        return interaction.update(montarPainelEmbedCustom(interaction.user.id));
+      }
+
+      if (interaction.customId === 'modal_embedcustom_thumbnail') {
+        const rascunho = obterRascunhoEmbed(interaction.user.id);
+        const valor = interaction.fields.getTextInputValue('embedcustom_thumbnail_input').trim();
+        rascunho.thumbnail = valor || null;
+        return interaction.update(montarPainelEmbedCustom(interaction.user.id));
+      }
     }
 
     if (interaction.isStringSelectMenu()) {
@@ -2022,9 +2112,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
           let rowFila;
           if (is1v1) {
             rowFila = new ActionRowBuilder().addComponents(
-              new ButtonBuilder().setCustomId(`entrar_gelo_normal_${valCentavos}`).setLabel('Gelo Normal').setStyle(ButtonStyle.Primary).setEmoji(emojiGeloNormal),
-              new ButtonBuilder().setCustomId(`entrar_gelo_infinito_${valCentavos}`).setLabel('Gelo Infinito').setStyle(ButtonStyle.Success).setEmoji(emojiGeloInfinito),
-              new ButtonBuilder().setCustomId(`sair_${valCentavos}`).setLabel('Sair').setStyle(ButtonStyle.Secondary).setEmoji(emojiSair)
+              new ButtonBuilder().setCustomId(`entrar_gelo_normal_${valCentavos}`).setLabel('Gelo Normal').setStyle(ButtonStyle.Secondary).setEmoji(emojiGeloNormal),
+              new ButtonBuilder().setCustomId(`entrar_gelo_infinito_${valCentavos}`).setLabel('Gelo Infinito').setStyle(ButtonStyle.Secondary).setEmoji(emojiGeloInfinito),
+              new ButtonBuilder().setCustomId(`sair_${valCentavos}`).setLabel('Sair').setStyle(ButtonStyle.Danger).setEmoji(emojiSair)
             );
           } else if (isMisto) {
             // Misto: 2x2 = 1 Emu | 3x3 = 1 Emu e 2 Emu | 4x4 = 1, 2 e 3 Emu | e o botão Sair
@@ -2038,9 +2128,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
             rowFila = new ActionRowBuilder().addComponents(botoesMisto);
           } else {
             rowFila = new ActionRowBuilder().addComponents(
-              new ButtonBuilder().setCustomId(`entrar_normal_${valCentavos}`).setLabel('Normal').setStyle(ButtonStyle.Primary).setEmoji(emojiNormal),
-              new ButtonBuilder().setCustomId(`entrar_ump_${valCentavos}`).setLabel('Full UMP e XM8').setStyle(ButtonStyle.Danger).setEmoji(emojiUmp),
-              new ButtonBuilder().setCustomId(`sair_${valCentavos}`).setLabel('Sair').setStyle(ButtonStyle.Secondary).setEmoji(emojiSair)
+              new ButtonBuilder().setCustomId(`entrar_normal_${valCentavos}`).setLabel('Normal').setStyle(ButtonStyle.Success).setEmoji(emojiNormal),
+              new ButtonBuilder().setCustomId(`entrar_ump_${valCentavos}`).setLabel('Full UMP e XM8').setStyle(ButtonStyle.Secondary).setEmoji(emojiUmp),
+              new ButtonBuilder().setCustomId(`sair_${valCentavos}`).setLabel('Sair').setStyle(ButtonStyle.Danger).setEmoji(emojiSair)
             );
           }
 
@@ -2485,6 +2575,99 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.editReply({ content: '🖼️ Selecione a embed que deseja editar:', components: [montarSelectEmbeds()] });
       }
 
+      // ---------- CONSTRUTOR DE EMBED PERSONALIZADA (/embed) ----------
+
+      if (id === 'embedcustom_titulo') {
+        const rascunho = obterRascunhoEmbed(interaction.user.id);
+        const modal = new ModalBuilder().setCustomId('modal_embedcustom_titulo').setTitle('Título da Embed');
+        const input = new TextInputBuilder()
+          .setCustomId('embedcustom_titulo_input')
+          .setLabel('Título (deixe vazio para remover)')
+          .setStyle(TextInputStyle.Short)
+          .setMaxLength(256)
+          .setRequired(false);
+        if (rascunho.titulo) input.setValue(rascunho.titulo);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        return interaction.showModal(modal);
+      }
+
+      if (id === 'embedcustom_descricao') {
+        const rascunho = obterRascunhoEmbed(interaction.user.id);
+        const modal = new ModalBuilder().setCustomId('modal_embedcustom_descricao').setTitle('Descrição da Embed');
+        const input = new TextInputBuilder()
+          .setCustomId('embedcustom_descricao_input')
+          .setLabel('Descrição (emojis, # título, @/# menções)')
+          .setStyle(TextInputStyle.Paragraph)
+          .setMaxLength(4000)
+          .setRequired(false);
+        if (rascunho.descricao) input.setValue(rascunho.descricao);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        return interaction.showModal(modal);
+      }
+
+      if (id === 'embedcustom_cor') {
+        const rascunho = obterRascunhoEmbed(interaction.user.id);
+        const modal = new ModalBuilder().setCustomId('modal_embedcustom_cor').setTitle('Cor da Embed');
+        const input = new TextInputBuilder()
+          .setCustomId('embedcustom_cor_input')
+          .setLabel('Código HEX (Ex: #FF0000, vazio = padrão)')
+          .setStyle(TextInputStyle.Short)
+          .setMaxLength(7)
+          .setRequired(false);
+        if (rascunho.cor) input.setValue(rascunho.cor);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        return interaction.showModal(modal);
+      }
+
+      if (id === 'embedcustom_imagem') {
+        const rascunho = obterRascunhoEmbed(interaction.user.id);
+        const modal = new ModalBuilder().setCustomId('modal_embedcustom_imagem').setTitle('Imagem da Embed');
+        const input = new TextInputBuilder()
+          .setCustomId('embedcustom_imagem_input')
+          .setLabel('Link da imagem (deixe vazio para remover)')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false);
+        if (rascunho.imagem) input.setValue(rascunho.imagem);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        return interaction.showModal(modal);
+      }
+
+      if (id === 'embedcustom_thumbnail') {
+        const rascunho = obterRascunhoEmbed(interaction.user.id);
+        const modal = new ModalBuilder().setCustomId('modal_embedcustom_thumbnail').setTitle('Thumbnail da Embed');
+        const input = new TextInputBuilder()
+          .setCustomId('embedcustom_thumbnail_input')
+          .setLabel('Link da thumbnail (deixe vazio para remover)')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false);
+        if (rascunho.thumbnail) input.setValue(rascunho.thumbnail);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        return interaction.showModal(modal);
+      }
+
+      if (id === 'embedcustom_limpar') {
+        rascunhosEmbed.delete(interaction.user.id);
+        return interaction.update(montarPainelEmbedCustom(interaction.user.id));
+      }
+
+      if (id === 'embedcustom_publicar') {
+        const rascunho = obterRascunhoEmbed(interaction.user.id);
+        if (!rascunho.titulo && !rascunho.descricao && !rascunho.imagem) {
+          return interaction.reply({ content: '⚠️ Configure ao menos um título, descrição ou imagem antes de publicar.', ephemeral: true });
+        }
+
+        const embedFinal = new EmbedBuilder().setColor(rascunho.cor || await corPadrao());
+        if (rascunho.titulo) embedFinal.setTitle(rascunho.titulo);
+        if (rascunho.descricao) embedFinal.setDescription(rascunho.descricao);
+        if (rascunho.imagem) embedFinal.setImage(rascunho.imagem);
+        if (rascunho.thumbnail) embedFinal.setThumbnail(rascunho.thumbnail);
+
+        await interaction.channel.send({ embeds: [embedFinal] });
+        rascunhosEmbed.delete(interaction.user.id);
+
+        return interaction.update({ content: '✅ Embed publicada neste canal!', embeds: [], components: [] });
+      }
+
       if (id.startsWith('entrar_') || id.startsWith('sair_')) {
         // Sem mediador online ninguém entra na fila. O aviso é privado (só quem clicou vê).
         if (id.startsWith('entrar_') && !(await obterProximoMediador())) {
@@ -2730,6 +2913,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
           .setMaxValues(5);
         return interaction.editReply({
           content: '🎖️ **Quais cargos podem ser mediadores?**',
+          components: [new ActionRowBuilder().addComponents(select)]
+        });
+      }
+
+      if (id === 'configbot_canal_p') {
+        if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
+        const select = new ChannelSelectMenuBuilder()
+          .setCustomId('select_channel_canal_p')
+          .setPlaceholder('Selecione o canal exclusivo do .p')
+          .setChannelTypes(ChannelType.GuildText);
+        return interaction.editReply({
+          content: '📇 **Em qual canal só será permitido usar `.p`?** Qualquer outra mensagem enviada nele será apagada automaticamente.',
           components: [new ActionRowBuilder().addComponents(select)]
         });
       }
@@ -3268,6 +3463,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       } else if (interaction.customId === 'select_ticket_staff_cargos') {
         chaveConfig = 'config_ticket_staff_cargos';
         textoResposta = `✅ Cargos da equipe de tickets salvos: ${interaction.values.map(v => `<@&${v}>`).join(', ')}`;
+      } else if (interaction.customId === 'select_channel_canal_p') {
+        chaveConfig = 'config_canal_p';
+        valorConfig = interaction.values[0];
+        textoResposta = `✅ Agora só será permitido usar \`.p\` em <#${valorConfig}>. Qualquer outra mensagem enviada lá será apagada.`;
       }
 
       await db.set(chaveConfig, valorConfig);
@@ -3294,6 +3493,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
 client.on(Events.MessageCreate, async (message) => {
   try {
     if (message.author.bot || !message.guild) return;
+
+    // Canal exclusivo do .p (configurado em /configbot > Canal .p): só pode ter ".p" ou
+    // ".p @alguém" nele. Qualquer outra mensagem é apagada sempre.
+    const canalP = await db.get('config_canal_p');
+    if (canalP && message.channel.id === canalP) {
+      const conteudo = message.content.trim();
+      const ehComandoPValido = /^\.p(\s+<@!?\d+>)?$/i.test(conteudo);
+      if (!ehComandoPValido) {
+        await message.delete().catch(() => {});
+        return;
+      }
+    }
 
     const [comando] = message.content.trim().split(/\s+/);
     const cmd = (comando || '').toLowerCase();
@@ -3329,50 +3540,64 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
 
-    // Detecta o mediador enviando "ID SENHA" (mesma linha ou linhas separadas) dentro do tópico
-    // da partida e monta a embed da sala automaticamente.
-    const matchData = await db.get(`match_${message.channel.id}`);
-    if (matchData && message.author.id === matchData.mediadorId) {
-      const tokens = message.content.trim().split(/\s+/).filter(Boolean);
-      if (tokens.length === 2 && /^[a-zA-Z0-9]{3,}$/.test(tokens[0]) && /^[a-zA-Z0-9]{1,}$/.test(tokens[1])) {
-        const [salaId, salaSenha] = tokens;
-
-        await comTrava(`match_${message.channel.id}`, async () => {
-          const atual = await db.get(`match_${message.channel.id}`);
-          if (!atual) return;
-          atual.salaId = salaId;
-          atual.salaSenha = salaSenha;
-          await db.set(`match_${message.channel.id}`, atual);
-        });
-
-        const valorVencedorReais = (typeof matchData.valor === 'number' ? matchData.valor : parseFloat(matchData.valor) || 0) * 2;
-        const valorFormatado = formatarValorVisual(valorVencedorReais);
-
-        const embedSala = new EmbedBuilder()
-          .setDescription(
-            `**A sala foi criada!**\nEntre *3 a 5 minutos* a partida será iniciada!\n\n` +
-            `↪ __Formato:__ \`${matchData.modalidade}${matchData.regra ? ' ' + matchData.regra : ''}\`\n\n` +
-            `↪ __ID:__ \`${salaId}\`\n\n` +
-            `↪ __Senha:__ \`${salaSenha}\`\n\n` +
-            `↪ __Valor para o vencedor:__ **R$${valorFormatado}**`
-          )
-          .setColor('#2B2D31');
-
-        const rowSala = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`sala_copiar_id_${message.channel.id}`).setLabel('Copiar ID').setStyle(ButtonStyle.Secondary).setEmoji(await obterEmoji('sala_copiar_id', '🆔')),
-          new ButtonBuilder().setCustomId(`sala_alterar_valor_${message.channel.id}`).setLabel('Alterar Valor').setStyle(ButtonStyle.Secondary).setEmoji(await obterEmoji('sala_alterar_valor', '✏️'))
-        );
-
-        await message.channel.send({
-          content: `<@${matchData.p1}> <@${matchData.p2}>`,
-          embeds: [embedSala],
-          components: [rowSala]
-        });
-
-        if (message.channel.setName) {
-          await message.channel.setName(`pagar-${valorFormatado}`.slice(0, 100)).catch(() => {});
-        }
+    // O mediador só cria a embed da sala com o comando explícito ".sala ID SENHA" — assim uma
+    // mensagem qualquer de duas palavras (ex: só bater papo no tópico) nunca dispara a sala à toa.
+    if (cmd === '.sala') {
+      const matchData = await db.get(`match_${message.channel.id}`);
+      if (!matchData) {
+        await message.reply({ content: '❌ Este comando só pode ser usado dentro do tópico de uma aposta.', allowedMentions: semPingar });
+        return;
       }
+      if (message.author.id !== matchData.mediadorId) {
+        await message.reply({ content: '❌ Você não tem permissão para isso.', allowedMentions: semPingar });
+        return;
+      }
+
+      const partes = message.content.trim().split(/\s+/).filter(Boolean);
+      const salaId = partes[1];
+      const salaSenha = partes[2];
+
+      if (partes.length !== 3 || !salaId || !salaSenha) {
+        await message.reply({ content: '❌ Use: `.sala ID SENHA` (Ex: `.sala Full roxa`)', allowedMentions: semPingar });
+        return;
+      }
+
+      await comTrava(`match_${message.channel.id}`, async () => {
+        const atual = await db.get(`match_${message.channel.id}`);
+        if (!atual) return;
+        atual.salaId = salaId;
+        atual.salaSenha = salaSenha;
+        await db.set(`match_${message.channel.id}`, atual);
+      });
+
+      const valorVencedorReais = (typeof matchData.valor === 'number' ? matchData.valor : parseFloat(matchData.valor) || 0) * 2;
+      const valorFormatado = formatarValorVisual(valorVencedorReais);
+
+      const embedSala = new EmbedBuilder()
+        .setDescription(
+          `**A sala foi criada!**\nEntre *3 a 5 minutos* a partida será iniciada!\n\n` +
+          `↪ __Formato:__ \`${matchData.modalidade}${matchData.regra ? ' ' + matchData.regra : ''}\`\n\n` +
+          `↪ __ID:__ \`${salaId}\`\n\n` +
+          `↪ __Senha:__ \`${salaSenha}\`\n\n` +
+          `↪ __Valor para o vencedor:__ **R$${valorFormatado}**`
+        )
+        .setColor('#2B2D31');
+
+      const rowSala = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`sala_copiar_id_${message.channel.id}`).setLabel('Copiar ID').setStyle(ButtonStyle.Secondary).setEmoji(await obterEmoji('sala_copiar_id', '🆔')),
+        new ButtonBuilder().setCustomId(`sala_alterar_valor_${message.channel.id}`).setLabel('Alterar Valor').setStyle(ButtonStyle.Secondary).setEmoji(await obterEmoji('sala_alterar_valor', '✏️'))
+      );
+
+      await message.channel.send({
+        content: `<@${matchData.p1}> <@${matchData.p2}>`,
+        embeds: [embedSala],
+        components: [rowSala]
+      });
+
+      if (message.channel.setName) {
+        await message.channel.setName(`pagar-${valorFormatado}`.slice(0, 100)).catch(() => {});
+      }
+      return;
     }
   } catch (error) {
     console.error('Erro no handler de mensagens:', error);
@@ -3437,7 +3662,7 @@ client.once(Events.ClientReady, async () => {
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
       .setName('embed')
-      .setDescription('Edita o título e a descrição de embeds do bot')
+      .setDescription('Abre o construtor de embed personalizada (título, descrição, cor e imagens)')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   ];
 
