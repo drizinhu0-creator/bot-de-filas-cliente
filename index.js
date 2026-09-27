@@ -1263,6 +1263,112 @@ async function reabrirTicketExistente(topico, usuario) {
 }
 
 // ==========================================
+// LOJA DE COINS (/configloja)
+// Configuração salva no banco:
+//   config_loja_nome      -> título usado na embed da loja
+//   config_loja_descricao -> descrição usada na embed da loja
+//   config_loja_imagem    -> URL da imagem/banner grande da embed (opcional)
+//   config_loja_produtos  -> lista de { id, nome, emoji, preco, removido } exibidos no menu
+// A thumbnail (canto direito) é SEMPRE a foto do servidor, não é configurável.
+// Produtos removidos continuam no banco (histórico), mas nunca aparecem na listagem nem no
+// menu de compra — por isso toda leitura de produtos filtra "!p.removido".
+// ==========================================
+
+const LOJA_NOME_PADRAO = '🛒 Lojinha de Coins';
+const LOJA_DESCRICAO_PADRAO = 'Selecione um produto para comprar com suas Coins.\n\nUtilize o menu abaixo para comprar';
+
+async function obterProdutosLoja(incluirRemovidos = false) {
+  const produtos = (await db.get('config_loja_produtos')) || [];
+  return incluirRemovidos ? produtos : produtos.filter(p => !p.removido);
+}
+
+function montarPainelConfigLoja() {
+  const embed = new EmbedBuilder()
+    .setTitle('🛒 Configuração da Loja de Coins')
+    .setDescription(
+      '**Nome** — título usado na embed da loja.\n' +
+      '**Descrição** — texto usado na embed da loja.\n' +
+      '**Produtos** — adicionar, remover ou listar os produtos vendidos.\n' +
+      '**Imagem** — banner grande (opcional) exibido na embed da loja.\n\n' +
+      'Depois de configurar, use **Publicar Painel Aqui** para postar a loja neste canal.'
+    )
+    .setColor('#0044FF');
+
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('loja_config_nome').setLabel('Nome').setStyle(ButtonStyle.Primary).setEmoji('📝'),
+    new ButtonBuilder().setCustomId('loja_config_descricao').setLabel('Descrição').setStyle(ButtonStyle.Primary).setEmoji('📄'),
+    new ButtonBuilder().setCustomId('loja_config_produtos').setLabel('Produtos').setStyle(ButtonStyle.Success).setEmoji('🛍️'),
+    new ButtonBuilder().setCustomId('loja_config_imagem').setLabel('Imagem').setStyle(ButtonStyle.Secondary).setEmoji('🖼️')
+  );
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('loja_config_publicar').setLabel('Publicar Painel Aqui').setStyle(ButtonStyle.Secondary).setEmoji('📌')
+  );
+
+  return { embeds: [embed], components: [row1, row2] };
+}
+
+function montarPainelLojaProdutos() {
+  const embed = new EmbedBuilder()
+    .setTitle('🛍️ Produtos da Loja')
+    .setDescription(
+      '**Adicionar Produto** — cadastra um novo item (preço em coins, emoji e nome).\n' +
+      '**Remover Produto** — remove um item já cadastrado.\n' +
+      '**Listar Produtos** — mostra os produtos ativos na loja.'
+    )
+    .setColor('#0044FF');
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('loja_produtos_adicionar').setLabel('Adicionar Produto').setStyle(ButtonStyle.Success).setEmoji('➕'),
+    new ButtonBuilder().setCustomId('loja_produtos_remover').setLabel('Remover Produto').setStyle(ButtonStyle.Danger).setEmoji('➖'),
+    new ButtonBuilder().setCustomId('loja_produtos_listar').setLabel('Listar Produtos').setStyle(ButtonStyle.Secondary).setEmoji('📋'),
+    new ButtonBuilder().setCustomId('loja_produtos_voltar').setLabel('Voltar').setStyle(ButtonStyle.Secondary).setEmoji('↩️')
+  );
+
+  return { embeds: [embed], components: [row] };
+}
+
+// Embed pública da loja: nome + descrição configurados, foto do servidor sempre no canto
+// direito (thumbnail) e, se configurada, uma imagem/banner grande embaixo.
+async function montarEmbedLojaPrincipal(guild) {
+  const nome = (await db.get('config_loja_nome')) || LOJA_NOME_PADRAO;
+  const descricao = (await db.get('config_loja_descricao')) || LOJA_DESCRICAO_PADRAO;
+  const imagem = await db.get('config_loja_imagem');
+  const produtos = await obterProdutosLoja();
+
+  const embed = new EmbedBuilder()
+    .setTitle(nome)
+    .setDescription(descricao)
+    .setColor(await corPadrao());
+
+  const icone = guild ? guild.iconURL({ size: 512 }) : null;
+  if (icone) embed.setThumbnail(icone);
+  if (imagem) embed.setImage(imagem);
+
+  const components = [];
+  if (produtos.length > 0) {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId('loja_selecionar_produto')
+      .setPlaceholder('Selecione um produto')
+      .addOptions(produtos.slice(0, 25).map((p, i) => {
+        const opt = {
+          label: p.nome.slice(0, 100),
+          description: `${p.preco} coins`.slice(0, 100),
+          value: String(i)
+        };
+        if (p.emoji) opt.emoji = p.emoji;
+        return opt;
+      }));
+    components.push(new ActionRowBuilder().addComponents(select));
+  }
+  components.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('loja_ver_coins').setLabel('Suas coins').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('loja_ver_rank').setLabel('Rank').setStyle(ButtonStyle.Secondary)
+  ));
+
+  return { embeds: [embed], components };
+}
+
+// ==========================================
 // MATCHMAKING E CRIAÇÃO DE PARTIDA
 // ==========================================
 
@@ -1564,6 +1670,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.editReply(montarPainelConfigTicket());
       }
 
+      if (commandName === 'configloja') {
+        if (!(await ehAdmin(interaction))) {
+          return interaction.reply({ content: '❌ Você não tem permissão para usar este comando.', ephemeral: true });
+        }
+        if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
+        return interaction.editReply(montarPainelConfigLoja());
+      }
+
       if (commandName === 'embed') {
         if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
         rascunhosEmbed.delete(interaction.user.id);
@@ -1638,6 +1752,57 @@ client.on(Events.InteractionCreate, async (interaction) => {
         });
 
         return interaction.editReply({ content: `✅ Opção **${nome}** adicionada! Os tickets dela serão criados como tópico dentro de <#${canalId}>.` });
+      }
+
+      if (interaction.customId === 'modal_loja_nome') {
+        if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
+        const valor = interaction.fields.getTextInputValue('loja_nome_input').trim();
+        await db.set('config_loja_nome', valor);
+        return interaction.editReply({ content: `✅ Nome da loja atualizado para: **${valor}**` });
+      }
+
+      if (interaction.customId === 'modal_loja_descricao') {
+        if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
+        const valor = interaction.fields.getTextInputValue('loja_descricao_input').trim();
+        await db.set('config_loja_descricao', valor);
+        return interaction.editReply({ content: '✅ Descrição da loja atualizada.' });
+      }
+
+      if (interaction.customId === 'modal_loja_imagem') {
+        if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
+        const entrada = interaction.fields.getTextInputValue('loja_imagem_input').trim();
+
+        if (entrada.toLowerCase() === 'remover') {
+          await db.delete('config_loja_imagem');
+          return interaction.editReply({ content: '✅ Imagem da loja removida.' });
+        }
+
+        if (!/^https?:\/\/\S+$/i.test(entrada)) {
+          return interaction.editReply({ content: '❌ Link inválido. Envie um link começando com http:// ou https://, ou digite `remover`.' });
+        }
+
+        await db.set('config_loja_imagem', entrada);
+        return interaction.editReply({ content: '✅ Imagem da loja atualizada.' });
+      }
+
+      if (interaction.customId === 'modal_loja_produto') {
+        if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
+        const nome = interaction.fields.getTextInputValue('loja_produto_nome').trim();
+        const precoTexto = interaction.fields.getTextInputValue('loja_produto_preco').trim();
+        const emoji = interaction.fields.getTextInputValue('loja_produto_emoji').trim();
+
+        const preco = parseInt(precoTexto, 10);
+        if (!Number.isInteger(preco) || preco <= 0) {
+          return interaction.editReply({ content: '❌ Preço inválido. Digite apenas um número inteiro positivo de coins (Ex: 50).' });
+        }
+
+        await comTrava('config_loja_produtos', async () => {
+          const produtos = (await db.get('config_loja_produtos')) || [];
+          produtos.push({ id: `produto_${Date.now()}`, nome, preco, emoji: emoji || null, removido: false });
+          await db.set('config_loja_produtos', produtos);
+        });
+
+        return interaction.editReply({ content: `✅ Produto **${nome}** adicionado por **${preco} coins**!` });
       }
 
       if (interaction.customId.startsWith('modal_emoji_')) {
@@ -2034,6 +2199,61 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         if (!removida) return interaction.editReply({ content: '⚠️ Essa opção não existe mais.', components: [] });
         return interaction.editReply({ content: `✅ Opção **${removida.nome}** removida.`, components: [] });
+      }
+
+      if (interaction.customId === 'select_loja_remover_produto') {
+        if (!(await ehAdmin(interaction))) {
+          return interaction.reply({ content: '❌ Você não tem permissão para usar esta opção.', ephemeral: true });
+        }
+        if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate();
+
+        const idx = parseInt(interaction.values[0], 10);
+        // Remoção "soft": mantém o produto no banco (histórico), só marca removido, pra nunca
+        // mais aparecer na listagem nem no menu de compra da loja.
+        const removido = await comTrava('config_loja_produtos', async () => {
+          const produtos = (await db.get('config_loja_produtos')) || [];
+          const ativos = produtos.filter(p => !p.removido);
+          const alvo = ativos[idx];
+          if (!alvo) return null;
+          const original = produtos.find(p => p.id === alvo.id);
+          if (original) original.removido = true;
+          await db.set('config_loja_produtos', produtos);
+          return alvo;
+        });
+
+        if (!removido) return interaction.editReply({ content: '⚠️ Esse produto não existe mais.', components: [] });
+        return interaction.editReply({ content: `✅ Produto **${removido.nome}** removido da loja.`, components: [] });
+      }
+
+      if (interaction.customId === 'loja_selecionar_produto') {
+        if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
+
+        const idx = parseInt(interaction.values[0], 10);
+        const produtos = await obterProdutosLoja();
+        const produto = produtos[idx];
+        if (!produto) {
+          return interaction.editReply({ content: '⚠️ Esse produto não existe mais.' });
+        }
+
+        const resultado = await comTrava('perfis_jogadores', async () => {
+          const perfis = (await db.get('perfis_jogadores')) || {};
+          if (!perfis[interaction.user.id]) {
+            perfis[interaction.user.id] = { vitorias: 0, derrotas: 0, consecutivas: 0, coins: 0, vitoriasDiarias: 0 };
+          }
+          const perfil = perfis[interaction.user.id];
+          if ((perfil.coins || 0) < produto.preco) {
+            return { erro: true, coins: perfil.coins || 0 };
+          }
+          perfil.coins -= produto.preco;
+          await db.set('perfis_jogadores', perfis);
+          return { erro: false, coinsRestantes: perfil.coins };
+        });
+
+        if (resultado.erro) {
+          return interaction.editReply({ content: `❌ Coins insuficientes. Você tem **${resultado.coins}** coins e o produto custa **${produto.preco}** coins.` });
+        }
+
+        return interaction.editReply({ content: `✅ Compra realizada! Você comprou **${produto.nome}** por **${produto.preco} coins**.\n\nSaldo restante: **${resultado.coinsRestantes}** coins.` });
       }
 
       if (interaction.customId.startsWith('select_personalizar_emoji')) {
@@ -2437,6 +2657,170 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
         await interaction.channel.send(await montarEmbedTicketPrincipal(interaction.guild));
         return interaction.editReply({ content: '✅ Painel de tickets publicado neste canal.' });
+      }
+
+      // ---------- CONFIGURAÇÃO DA LOJA DE COINS (/configloja) ----------
+
+      if (id === 'loja_config_nome') {
+        if (!(await ehAdmin(interaction))) {
+          return interaction.reply({ content: '❌ Você não tem permissão para usar esta opção.', ephemeral: true });
+        }
+        const atual = (await db.get('config_loja_nome')) || LOJA_NOME_PADRAO;
+        const modal = new ModalBuilder().setCustomId('modal_loja_nome').setTitle('Nome da Loja');
+        const input = new TextInputBuilder()
+          .setCustomId('loja_nome_input')
+          .setLabel('Nome (título da embed)')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('Ex: 🛒 Lojinha de Coins')
+          .setValue(atual.slice(0, 4000))
+          .setMaxLength(256)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        return interaction.showModal(modal);
+      }
+
+      if (id === 'loja_config_descricao') {
+        if (!(await ehAdmin(interaction))) {
+          return interaction.reply({ content: '❌ Você não tem permissão para usar esta opção.', ephemeral: true });
+        }
+        const atual = (await db.get('config_loja_descricao')) || LOJA_DESCRICAO_PADRAO;
+        const modal = new ModalBuilder().setCustomId('modal_loja_descricao').setTitle('Descrição da Loja');
+        const input = new TextInputBuilder()
+          .setCustomId('loja_descricao_input')
+          .setLabel('Descrição da embed')
+          .setStyle(TextInputStyle.Paragraph)
+          .setPlaceholder('Ex: Selecione um produto para comprar com suas Coins.')
+          .setValue(atual.slice(0, 4000))
+          .setMaxLength(1000)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        return interaction.showModal(modal);
+      }
+
+      if (id === 'loja_config_imagem') {
+        if (!(await ehAdmin(interaction))) {
+          return interaction.reply({ content: '❌ Você não tem permissão para usar esta opção.', ephemeral: true });
+        }
+        const modal = new ModalBuilder().setCustomId('modal_loja_imagem').setTitle('Imagem da Loja');
+        const input = new TextInputBuilder()
+          .setCustomId('loja_imagem_input')
+          .setLabel('Link da imagem (ou "remover")')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('https://exemplo.com/banner.png ou remover')
+          .setMaxLength(500)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        return interaction.showModal(modal);
+      }
+
+      if (id === 'loja_config_produtos') {
+        if (!(await ehAdmin(interaction))) {
+          return interaction.reply({ content: '❌ Você não tem permissão para usar esta opção.', ephemeral: true });
+        }
+        if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate();
+        return interaction.editReply(montarPainelLojaProdutos());
+      }
+
+      if (id === 'loja_produtos_voltar') {
+        if (!(await ehAdmin(interaction))) {
+          return interaction.reply({ content: '❌ Você não tem permissão para usar esta opção.', ephemeral: true });
+        }
+        if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate();
+        return interaction.editReply(montarPainelConfigLoja());
+      }
+
+      if (id === 'loja_produtos_adicionar') {
+        if (!(await ehAdmin(interaction))) {
+          return interaction.reply({ content: '❌ Você não tem permissão para usar esta opção.', ephemeral: true });
+        }
+        const modal = new ModalBuilder().setCustomId('modal_loja_produto').setTitle('Adicionar Produto');
+        const inputNome = new TextInputBuilder()
+          .setCustomId('loja_produto_nome')
+          .setLabel('Nome do produto')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('Ex: Cargo VIP')
+          .setMaxLength(100)
+          .setRequired(true);
+        const inputPreco = new TextInputBuilder()
+          .setCustomId('loja_produto_preco')
+          .setLabel('Preço em coins')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('Ex: 50')
+          .setMaxLength(10)
+          .setRequired(true);
+        const inputEmoji = new TextInputBuilder()
+          .setCustomId('loja_produto_emoji')
+          .setLabel('Emoji do produto (opcional)')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('Cole um emoji unicode ou de servidor')
+          .setMaxLength(100)
+          .setRequired(false);
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(inputNome),
+          new ActionRowBuilder().addComponents(inputPreco),
+          new ActionRowBuilder().addComponents(inputEmoji)
+        );
+        return interaction.showModal(modal);
+      }
+
+      if (id === 'loja_produtos_remover') {
+        if (!(await ehAdmin(interaction))) {
+          return interaction.reply({ content: '❌ Você não tem permissão para usar esta opção.', ephemeral: true });
+        }
+        const produtos = await obterProdutosLoja();
+        if (produtos.length === 0) {
+          return interaction.reply({ content: '⚠️ Não existem produtos cadastrados para remover.', ephemeral: true });
+        }
+
+        const select = new StringSelectMenuBuilder()
+          .setCustomId('select_loja_remover_produto')
+          .setPlaceholder('Selecione o produto que deseja remover')
+          .addOptions(produtos.slice(0, 25).map((p, i) => {
+            const opt = { label: `${p.nome} — ${p.preco} coins`.slice(0, 100), value: String(i) };
+            if (p.emoji) opt.emoji = p.emoji;
+            return opt;
+          }));
+
+        return interaction.reply({ content: '➖ **Selecione o produto que deseja remover:**', components: [new ActionRowBuilder().addComponents(select)], ephemeral: true });
+      }
+
+      if (id === 'loja_produtos_listar') {
+        const produtos = await obterProdutosLoja();
+        if (produtos.length === 0) {
+          return interaction.reply({ content: '⚠️ Nenhum produto cadastrado na loja ainda.', ephemeral: true });
+        }
+
+        const lista = produtos.map(p => `${p.emoji ? p.emoji + ' ' : ''}**${p.nome}** — ${p.preco} coins`).join('\n');
+        const embed = new EmbedBuilder()
+          .setTitle('📋 Produtos da Loja')
+          .setDescription(lista)
+          .setColor(await corPadrao());
+
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
+      if (id === 'loja_config_publicar') {
+        if (!(await ehAdmin(interaction))) {
+          return interaction.reply({ content: '❌ Você não tem permissão para usar esta opção.', ephemeral: true });
+        }
+        if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
+        await interaction.channel.send(await montarEmbedLojaPrincipal(interaction.guild));
+        return interaction.editReply({ content: '✅ Painel da loja publicado neste canal.' });
+      }
+
+      if (id === 'loja_ver_coins') {
+        const perfis = (await db.get('perfis_jogadores')) || {};
+        const coins = (perfis[interaction.user.id] && perfis[interaction.user.id].coins) || 0;
+        const embed = new EmbedBuilder()
+          .setTitle('🪙 Seu Saldo de Coins')
+          .setDescription(`Você possui **${coins}** coins.`)
+          .setColor(await corPadrao());
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
+      if (id === 'loja_ver_rank') {
+        const painel = await montarEmbedRanking('coins', interaction.guild);
+        return interaction.reply({ ...painel, ephemeral: true });
       }
 
       // ---------- BOTÕES DENTRO DO TICKET ----------
@@ -3342,6 +3726,69 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.update(opcoesUpdate);
       }
 
+      // Resposta do mediador em "Escolha o vencedor" / "Vitória por W.O" (botões Jogador 1 / Jogador 2)
+      if (id.startsWith('med_res_')) {
+        const partes = id.match(/^med_res_(vit|wo)_(\d+)_([12])$/);
+        if (!partes) {
+          return interaction.reply({ content: 'Ação inválida.', ephemeral: true });
+        }
+        const tipo = partes[1];
+        const threadId = partes[2];
+        const numero = partes[3];
+
+        const matchData = await carregarApostaDoMediador(interaction, threadId);
+        if (!matchData) return;
+
+        if (matchData.confirmations.length < 2) {
+          return interaction.reply({ content: '⚠️ Aguarde os dois jogadores confirmarem a aposta.', ephemeral: true });
+        }
+        if (matchData.resultadoRegistrado) {
+          return interaction.update({ content: '⚠️ O resultado desta aposta já foi registrado.', components: [] });
+        }
+
+        const vencedorId = numero === '1' ? matchData.p1 : matchData.p2;
+        const perdedorId = numero === '1' ? matchData.p2 : matchData.p1;
+
+        // Marca (com trava) antes de mexer nos perfis para não registrar 2 vezes
+        const marcacao = await comTrava(`match_${threadId}`, async () => {
+          const atual = await db.get(`match_${threadId}`);
+          if (!atual) return 'sem_partida';
+          if (atual.resultadoRegistrado) return 'ja_registrado';
+          atual.resultadoRegistrado = true;
+          await db.set(`match_${threadId}`, atual);
+          return 'ok';
+        });
+
+        if (marcacao !== 'ok') {
+          return interaction.update({
+            content: marcacao === 'ja_registrado' ? '⚠️ O resultado desta aposta já foi registrado.' : 'Partida não encontrada.',
+            components: []
+          });
+        }
+
+        try {
+          await registrarResultado(vencedorId, perdedorId, tipo);
+        } catch (err) {
+          console.error('Erro ao salvar o resultado no MongoDB:', err);
+          await comTrava(`match_${threadId}`, async () => {
+            const atual = await db.get(`match_${threadId}`);
+            if (!atual) return;
+            atual.resultadoRegistrado = false;
+            await db.set(`match_${threadId}`, atual);
+          });
+          return interaction.update({ content: '❌ Não consegui salvar o resultado no banco de dados. Tente novamente.', components: [] });
+        }
+
+        await interaction.update({ content: '✅ Resultado registrado.', components: [] });
+
+        const textoResultado = tipo === 'wo'
+          ? `1 vitória adicionada para <@${vencedorId}>.`
+          : `1 vitória e 1 coin adicionadas para <@${vencedorId}>.`;
+
+        await interaction.channel.send({ content: textoResultado });
+        return;
+      }
+
       if (id.startsWith('partida_confirmar_')) {
         const threadId = id.replace('partida_confirmar_', '');
         const matchKey = `match_${threadId}`;
@@ -3396,9 +3843,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             const nomeRegra = matchData.regra ? `fila (${matchData.regra})` : `fila (${matchData.modalidade})`;
             await interaction.channel.setName(nomeRegra.slice(0, 100)).catch(() => {});
           }
-
-          // Posta o painel do mediador (Menu ADM + barra .med) direto no tópico
-          await interaction.channel.send(await montarPainelMediador(matchData, threadId));
 
           const valorPagar = matchData.valorPagar || await calcularValorComTaxaVirtual(matchData.valor);
           const rowLiberar = new ActionRowBuilder().addComponents(
@@ -3490,6 +3934,46 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // COMANDOS POR MENSAGEM: .p (perfil), .med (painel do mediador) e .d (personalização)
 // ==========================================
 
+// Cria (ou recria) a embed da sala dentro do tópico da partida — usada tanto pelo comando
+// explícito ".sala ID SENHA" quanto pela detecção automática (mediador manda só 2 números).
+async function criarSalaNoTopico(message, matchData, salaId, salaSenha) {
+  await comTrava(`match_${message.channel.id}`, async () => {
+    const atual = await db.get(`match_${message.channel.id}`);
+    if (!atual) return;
+    atual.salaId = salaId;
+    atual.salaSenha = salaSenha;
+    await db.set(`match_${message.channel.id}`, atual);
+  });
+
+  const valorVencedorReais = (typeof matchData.valor === 'number' ? matchData.valor : parseFloat(matchData.valor) || 0) * 2;
+  const valorFormatado = formatarValorVisual(valorVencedorReais);
+
+  const embedSala = new EmbedBuilder()
+    .setDescription(
+      `**A sala foi criada!**\nEntre *3 a 5 minutos* a partida será iniciada!\n\n` +
+      `↪ __Formato:__ \`${matchData.modalidade}${matchData.regra ? ' ' + matchData.regra : ''}\`\n\n` +
+      `↪ __ID:__ \`${salaId}\`\n\n` +
+      `↪ __Senha:__ \`${salaSenha}\`\n\n` +
+      `↪ __Valor para o vencedor:__ **R$${valorFormatado}**`
+    )
+    .setColor('#2B2D31');
+
+  const rowSala = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`sala_copiar_id_${message.channel.id}`).setLabel('Copiar ID').setStyle(ButtonStyle.Secondary).setEmoji(await obterEmoji('sala_copiar_id', '🆔')),
+    new ButtonBuilder().setCustomId(`sala_alterar_valor_${message.channel.id}`).setLabel('Alterar Valor').setStyle(ButtonStyle.Secondary).setEmoji(await obterEmoji('sala_alterar_valor', '✏️'))
+  );
+
+  await message.channel.send({
+    content: `<@${matchData.p1}> <@${matchData.p2}>`,
+    embeds: [embedSala],
+    components: [rowSala]
+  });
+
+  if (message.channel.setName) {
+    await message.channel.setName(`pagar-${valorFormatado}`.slice(0, 100)).catch(() => {});
+  }
+}
+
 client.on(Events.MessageCreate, async (message) => {
   try {
     if (message.author.bot || !message.guild) return;
@@ -3540,8 +4024,11 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
 
-    // O mediador só cria a embed da sala com o comando explícito ".sala ID SENHA" — assim uma
-    // mensagem qualquer de duas palavras (ex: só bater papo no tópico) nunca dispara a sala à toa.
+    // O mediador pode criar a embed da sala de dois jeitos:
+    //  1) comando explícito ".sala ID SENHA" (aceita letras, ex: ".sala Full roxa");
+    //  2) mandando só o ID e a senha diretamente no tópico, SE os dois forem só números
+    //     (ex: "283848858 23", numa linha só ou em duas linhas) — qualquer letra no meio
+    //     cancela essa detecção automática, pra não criar a sala à toa numa conversa qualquer.
     if (cmd === '.sala') {
       const matchData = await db.get(`match_${message.channel.id}`);
       if (!matchData) {
@@ -3562,42 +4049,20 @@ client.on(Events.MessageCreate, async (message) => {
         return;
       }
 
-      await comTrava(`match_${message.channel.id}`, async () => {
-        const atual = await db.get(`match_${message.channel.id}`);
-        if (!atual) return;
-        atual.salaId = salaId;
-        atual.salaSenha = salaSenha;
-        await db.set(`match_${message.channel.id}`, atual);
-      });
-
-      const valorVencedorReais = (typeof matchData.valor === 'number' ? matchData.valor : parseFloat(matchData.valor) || 0) * 2;
-      const valorFormatado = formatarValorVisual(valorVencedorReais);
-
-      const embedSala = new EmbedBuilder()
-        .setDescription(
-          `**A sala foi criada!**\nEntre *3 a 5 minutos* a partida será iniciada!\n\n` +
-          `↪ __Formato:__ \`${matchData.modalidade}${matchData.regra ? ' ' + matchData.regra : ''}\`\n\n` +
-          `↪ __ID:__ \`${salaId}\`\n\n` +
-          `↪ __Senha:__ \`${salaSenha}\`\n\n` +
-          `↪ __Valor para o vencedor:__ **R$${valorFormatado}**`
-        )
-        .setColor('#2B2D31');
-
-      const rowSala = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`sala_copiar_id_${message.channel.id}`).setLabel('Copiar ID').setStyle(ButtonStyle.Secondary).setEmoji(await obterEmoji('sala_copiar_id', '🆔')),
-        new ButtonBuilder().setCustomId(`sala_alterar_valor_${message.channel.id}`).setLabel('Alterar Valor').setStyle(ButtonStyle.Secondary).setEmoji(await obterEmoji('sala_alterar_valor', '✏️'))
-      );
-
-      await message.channel.send({
-        content: `<@${matchData.p1}> <@${matchData.p2}>`,
-        embeds: [embedSala],
-        components: [rowSala]
-      });
-
-      if (message.channel.setName) {
-        await message.channel.setName(`pagar-${valorFormatado}`.slice(0, 100)).catch(() => {});
-      }
+      await criarSalaNoTopico(message, matchData, salaId, salaSenha);
       return;
+    }
+
+    // Detecção automática: mensagem comum (sem "."), do mediador, dentro do tópico da própria
+    // partida, com exatamente 2 "palavras" e as duas sendo só números.
+    if (!cmd.startsWith('.')) {
+      const matchData = await db.get(`match_${message.channel.id}`);
+      if (matchData && message.author.id === matchData.mediadorId) {
+        const tokens = message.content.trim().split(/\s+/).filter(Boolean);
+        if (tokens.length === 2 && tokens.every(t => /^\d+$/.test(t))) {
+          await criarSalaNoTopico(message, matchData, tokens[0], tokens[1]);
+        }
+      }
     }
   } catch (error) {
     console.error('Erro no handler de mensagens:', error);
@@ -3659,6 +4124,10 @@ client.once(Events.ClientReady, async () => {
     new SlashCommandBuilder()
       .setName('configticket')
       .setDescription('Painel de configuração do sistema de tickets')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+      .setName('configloja')
+      .setDescription('Painel de configuração da loja de coins')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
       .setName('embed')
